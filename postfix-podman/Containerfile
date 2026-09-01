@@ -1,0 +1,21 @@
+FROM docker.io/library/debian:bookworm-slim
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+RUN apt update \
+    && echo "postfix postfix/mailname string localhost" | debconf-set-selections \
+    && echo "postfix postfix/main_mailer_type string 'Internet Site'" | debconf-set-selections \
+    && apt install -y --no-install-recommends postfix dovecot-core dovecot-imapd ca-certificates libsasl2-modules \
+    && rm -rf /var/lib/apt/lists/* \
+    && groupadd --gid 5000 vmail \
+    && useradd --uid 5000 --gid vmail --home-dir /var/mail/vhosts --no-create-home --shell /usr/sbin/nologin vmail
+
+COPY config/master.cf /etc/postfix/master.cf
+COPY scripts/entrypoint.sh /usr/local/bin/entrypoint.sh
+
+RUN chmod 0755 /usr/local/bin/entrypoint.sh
+
+EXPOSE 25 143 587 993
+VOLUME ["/var/mail/vhosts", "/etc/postfix/tls"]
+
+ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]

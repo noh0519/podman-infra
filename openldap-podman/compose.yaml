@@ -1,0 +1,44 @@
+services:
+  openldap:
+    build:
+      context: .
+      dockerfile: Containerfile
+    image: localhost/openldap-server:1.0
+    container_name: openldap-server
+    hostname: ${LDAP_HOSTNAME:?Set LDAP_HOSTNAME in .env}
+    restart: unless-stopped
+    env_file:
+      - .env
+    ports:
+      - "389:389"
+      - "636:636"
+    volumes:
+      - ldap-data:/var/lib/ldap:Z
+      - ldap-tls:/etc/ldap/tls:Z
+    healthcheck:
+      test: ["CMD-SHELL", "LDAPTLS_REQCERT=never ldapwhoami -x -H ldaps://127.0.0.1:636 >/dev/null 2>&1"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    security_opt:
+      - no-new-privileges:true
+    networks:
+      ldap-backend:
+        ipv4_address: 10.89.1.2
+        ipv6_address: fd00:2:2::2
+
+volumes:
+  ldap-data:
+  ldap-tls:
+
+networks:
+  ldap-backend:
+    driver: bridge
+    enable_ipv6: true
+    ipam:
+      config:
+        - subnet: 10.89.1.0/24
+          gateway: 10.89.1.1
+        - subnet: fd00:2:2::/64
+          gateway: fd00:2:2::1
