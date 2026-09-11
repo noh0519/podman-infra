@@ -17,7 +17,7 @@ services:
       - ldap-config:/etc/ldap/slapd.d:Z
       - ldap-tls:/etc/ldap/tls:Z
     healthcheck:
-      test: ["CMD-SHELL", "LDAPTLS_REQCERT=never ldapwhoami -x -H ldaps://127.0.0.1:636 >/dev/null 2>&1"]
+      test: ["CMD-SHELL", "LDAPTLS_CACERT=/etc/ldap/tls/ca.crt LDAPTLS_REQCERT=demand ldapwhoami -x -H ldaps://openldap:636 >/dev/null 2>&1"]
       interval: 30s
       timeout: 5s
       retries: 5

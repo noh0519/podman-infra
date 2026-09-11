@@ -27,20 +27,7 @@ fi
 install -d -o openldap -g openldap -m 0700 \
     /var/lib/ldap /etc/ldap/slapd.d /etc/ldap/tls
 
-if [ ! -s /etc/ldap/tls/ca.crt ] || [ ! -s /etc/ldap/tls/server.crt ] || [ ! -s /etc/ldap/tls/server.key ]; then
-    tls_work_dir=$(mktemp -d)
-    trap 'rm -rf "$tls_work_dir"' EXIT
-    openssl req -x509 -newkey rsa:4096 -sha256 -days 3650 -nodes \
-        -subj "/CN=$LDAP_HOSTNAME/O=$LDAP_ORGANIZATION" \
-        -addext "subjectAltName=DNS:$LDAP_HOSTNAME,DNS:openldap" \
-        -keyout "$tls_work_dir/server.key" -out "$tls_work_dir/server.crt"
-    cp "$tls_work_dir/server.crt" /etc/ldap/tls/ca.crt
-    cp "$tls_work_dir/server.crt" /etc/ldap/tls/server.crt
-    cp "$tls_work_dir/server.key" /etc/ldap/tls/server.key
-    chown openldap:openldap /etc/ldap/tls/*
-    chmod 0600 /etc/ldap/tls/server.key
-    chmod 0644 /etc/ldap/tls/ca.crt /etc/ldap/tls/server.crt
-fi
+/usr/local/bin/generate-tls.sh
 
 password_hash() {
     case "$1" in

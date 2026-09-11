@@ -11,7 +11,7 @@
 - LDAP/STARTTLS: TCP 389
 - LDAPS: TCP 636
 - `ldapi:///`와 SASL EXTERNAL을 통한 로컬 설정 관리
-- LDAP DB, `cn=config`, 자체 서명 인증서를 Podman 볼륨에 영속화
+- LDAP DB, `cn=config`, 전용 로컬 CA와 서버 인증서를 Podman 볼륨에 영속화
 - 익명 디렉터리 조회 차단
 - 관리자 및 사용자 비밀번호는 SSHA 해시로 LDAP DB에 저장
 
@@ -30,7 +30,7 @@ chmod 600 .env
 - `LDAP_BASE_DN`: 디렉터리 suffix
 - `LDAP_ADMIN_DN`, `LDAP_ADMIN_PASSWORD`: 관리자 로그인 정보
 - `LDAP_USER_*`: 빈 데이터 볼륨의 첫 기동 때 생성할 사용자 정보
-- `LDAP_HOSTNAME`: 자체 서명 인증서의 CN과 SAN
+- `LDAP_HOSTNAME`: 서버 인증서의 CN과 SAN
 
 `LDAP_ADMIN_PASSWORD`와 `LDAP_USER_PASSWORD`에는 평문 또는 `slappasswd`로 생성한
 `{SSHA}` 값을 사용할 수 있습니다. `{SSHA}` 값을 사용하면 컨테이너는 이를 다시
@@ -39,6 +39,27 @@ chmod 600 .env
 초기 사용자 항목은 LDAP 데이터 볼륨이 비어 있을 때만 생성됩니다. 운영 중
 `.env`에서 관리자나 초기 사용자 값을 바꾸는 것만으로 기존 `cn=config` 또는 LDAP
 항목은 변경되지 않습니다. 운영 중 설정은 LDAP 연산으로 변경하십시오.
+
+## TLS 인증서
+
+빈 `ldap-tls` 볼륨으로 처음 실행하면 다음 인증서를 자동 생성합니다.
+
+- 4096비트 RSA 로컬 CA: 유효기간 10년
+- CA가 서명한 4096비트 RSA 서버 인증서: 유효기간 825일
+- 서버 인증서 SAN: `LDAP_HOSTNAME`, `openldap`
+- 서버 인증서 용도: TLS Web Server Authentication
+
+볼륨의 파일과 권한은 다음과 같습니다.
+
+```text
+/etc/ldap/tls/ca.crt       0644  OpenLDAP과 클라이언트에 배포할 CA 인증서
+/etc/ldap/tls/ca.key       0600  root 전용 CA 개인키
+/etc/ldap/tls/server.crt   0644  OpenLDAP 서버 인증서
+/etc/ldap/tls/server.key   0600  OpenLDAP 서버 개인키
+```
+
+기동할 때 인증서 유효기간, CA 서명 및 서버 인증서/개인키 일치 여부를 검사합니다.
+필수 파일이 이미 있는 기존 TLS 볼륨은 자동 교체하지 않습니다.
 
 ## 동적 설정 구조
 
@@ -83,15 +104,19 @@ podman compose logs -f openldap
 
 ## 연결 확인
 
-자체 서명 인증서이므로 테스트할 때 CA 검증을 명시적으로 완화할 수 있습니다.
+운영 클라이언트에는 `/etc/ldap/tls/ca.crt`를 신뢰 CA로 배포하십시오. 다음 명령은
+클라이언트가 `ldap.bonohbh.com`을 올바른 서버 주소로 해석할 수 있을 때 인증서와
+호스트 이름을 모두 검증합니다.
 
 ```sh
-LDAPTLS_REQCERT=never ldapwhoami \
-  -x -H ldaps://127.0.0.1:636 \
+podman cp openldap-server:/etc/ldap/tls/ca.crt ./ldap-ca.crt
+LDAPTLS_CACERT="$PWD/ldap-ca.crt" LDAPTLS_REQCERT=demand ldapwhoami \
+  -x -H ldaps://ldap.bonohbh.com:636 \
   -D 'cn=admin,dc=bonohbh,dc=com' -W
 ```
 
-운영 클라이언트에는 컨테이너의 `/etc/ldap/tls/ca.crt`를 신뢰 CA로 배포하고 검증 완화 옵션을 사용하지 마십시오.
+Compose 헬스체크도 동일한 CA로 `ldaps://openldap:636`을 검증합니다. 운영 환경에서는
+`LDAPTLS_REQCERT=never` 같은 검증 완화 옵션을 사용하지 마십시오.
 
 ## 비밀번호 변경
 
@@ -172,7 +197,8 @@ podman compose start
 podman compose down
 ```
 
-다음 명령은 LDAP DB, 동적 설정 및 자체 서명 인증서를 포함한 볼륨까지 삭제합니다.
+다음 명령은 LDAP DB, 동적 설정, CA 개인키 및 서버 인증서를 포함한 볼륨까지
+삭제합니다.
 
 ```sh
 podman compose down -v

@@ -8,8 +8,8 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/* \
     && rm -rf /var/lib/ldap/*
 
-COPY scripts/entrypoint.sh /usr/local/bin/entrypoint.sh
-RUN chmod 0755 /usr/local/bin/entrypoint.sh
+COPY scripts/entrypoint.sh scripts/generate-tls.sh /usr/local/bin/
+RUN chmod 0755 /usr/local/bin/entrypoint.sh /usr/local/bin/generate-tls.sh
 
 EXPOSE 389 636
 VOLUME ["/var/lib/ldap", "/etc/ldap/slapd.d", "/etc/ldap/tls"]
