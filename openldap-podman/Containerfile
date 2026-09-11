@@ -12,7 +12,6 @@ COPY scripts/entrypoint.sh /usr/local/bin/entrypoint.sh
 RUN chmod 0755 /usr/local/bin/entrypoint.sh
 
 EXPOSE 389 636
-VOLUME ["/var/lib/ldap", "/etc/ldap/tls"]
+VOLUME ["/var/lib/ldap", "/etc/ldap/slapd.d", "/etc/ldap/tls"]
 
 ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
-

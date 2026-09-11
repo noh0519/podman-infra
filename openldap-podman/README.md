@@ -7,9 +7,11 @@
 - Base DN: `dc=bonohbh,dc=com`
 - 관리자 DN: `cn=admin,dc=bonohbh,dc=com`
 - 초기 사용자 DN: `uid=user1,dc=bonohbh,dc=com`
+- `slapd-config` (`cn=config`) 동적 설정 사용
 - LDAP/STARTTLS: TCP 389
 - LDAPS: TCP 636
-- LDAP DB 및 자체 서명 인증서를 Podman 볼륨에 영속화
+- `ldapi:///`와 SASL EXTERNAL을 통한 로컬 설정 관리
+- LDAP DB, `cn=config`, 자체 서명 인증서를 Podman 볼륨에 영속화
 - 익명 디렉터리 조회 차단
 - 관리자 및 사용자 비밀번호는 SSHA 해시로 LDAP DB에 저장
 
@@ -22,7 +24,8 @@ cp .env.example .env
 chmod 600 .env
 ```
 
-주요 값은 다음과 같습니다.
+주요 값은 다음과 같습니다. 디렉터리 및 관리자 관련 값은 `ldap-config` 볼륨을
+처음 초기화할 때 사용됩니다.
 
 - `LDAP_BASE_DN`: 디렉터리 suffix
 - `LDAP_ADMIN_DN`, `LDAP_ADMIN_PASSWORD`: 관리자 로그인 정보
@@ -33,7 +36,42 @@ chmod 600 .env
 `{SSHA}` 값을 사용할 수 있습니다. `{SSHA}` 값을 사용하면 컨테이너는 이를 다시
 해싱하지 않고 그대로 OpenLDAP 설정 및 초기 데이터에 적용합니다.
 
-초기 사용자 항목은 LDAP 데이터 볼륨이 비어 있을 때만 생성됩니다. 운영 중 `.env`에서 초기 사용자 값을 바꾸는 것만으로 기존 LDAP 항목은 변경되지 않습니다.
+초기 사용자 항목은 LDAP 데이터 볼륨이 비어 있을 때만 생성됩니다. 운영 중
+`.env`에서 관리자나 초기 사용자 값을 바꾸는 것만으로 기존 `cn=config` 또는 LDAP
+항목은 변경되지 않습니다. 운영 중 설정은 LDAP 연산으로 변경하십시오.
+
+## 동적 설정 구조
+
+첫 기동 때 엔트리포인트가 임시 설정을 만들고 `slaptest`로
+`/etc/ldap/slapd.d`의 `cn=config` 데이터베이스로 변환합니다. 이후 `slapd`는 항상
+다음과 같이 동적 설정 디렉터리에서 실행됩니다.
+
+```sh
+slapd -F /etc/ldap/slapd.d -h "ldap:/// ldaps:/// ldapi:///"
+```
+
+`slapd.d` 안의 LDIF 파일을 직접 편집하지 마십시오. 실행 중에는 컨테이너 내부
+root만 `ldapi:///`와 SASL EXTERNAL을 통해 `cn=config`를 관리할 수 있습니다.
+
+현재 설정을 조회하는 예시는 다음과 같습니다.
+
+```sh
+podman exec openldap-server ldapsearch -LLL -Q \
+  -Y EXTERNAL -H ldapi:/// -b cn=config
+```
+
+예를 들어 로그 수준을 변경하면 서버를 재시작하지 않아도 적용되고 `ldap-config`
+볼륨에 영속화됩니다.
+
+```sh
+podman exec -i openldap-server ldapmodify -Q \
+  -Y EXTERNAL -H ldapi:/// <<'LDIF'
+dn: cn=config
+changetype: modify
+replace: olcLogLevel
+olcLogLevel: stats
+LDIF
+```
 
 ## 실행
 
@@ -57,10 +95,31 @@ LDAPTLS_REQCERT=never ldapwhoami \
 
 ## 비밀번호 변경
 
-관리자 비밀번호는 `slapd.conf`를 기동 때 다시 생성하므로 `.env` 변경 후 컨테이너를 재생성하면 적용됩니다.
+관리자 비밀번호도 `cn=config`에서 변경합니다. 먼저 새 SSHA 해시를 생성하십시오.
 
 ```sh
-podman compose up -d --force-recreate
+podman exec -it openldap-server slappasswd
+```
+
+MDB 설정 DN을 조회합니다.
+
+```sh
+podman exec openldap-server ldapsearch -LLL -Q \
+  -Y EXTERNAL -H ldapi:/// -b cn=config \
+  '(&(objectClass=olcMdbConfig)(olcSuffix=dc=bonohbh,dc=com))' dn
+```
+
+조회된 DN과 `slappasswd` 출력값으로 `olcRootPW`를 교체합니다. 기본 초기화 결과의
+MDB 설정 DN은 `olcDatabase={1}mdb,cn=config`입니다.
+
+```sh
+podman exec -i openldap-server ldapmodify -Q \
+  -Y EXTERNAL -H ldapi:/// <<'LDIF'
+dn: olcDatabase={1}mdb,cn=config
+changetype: modify
+replace: olcRootPW
+olcRootPW: {SSHA}<slappasswd-output>
+LDIF
 ```
 
 `user1` 등 일반 사용자의 비밀번호는 `ldappasswd`로 변경합니다.
@@ -74,16 +133,36 @@ podman exec -it openldap-server ldappasswd \
 
 ## 백업 및 복구
 
-일관된 온라인 백업은 관리자 인증을 사용한 LDIF 내보내기로 수행합니다.
+디렉터리 데이터와 동적 설정을 모두 백업합니다.
 
 ```sh
 mkdir -p backup
 podman exec openldap-server sh -c \
-  'ldapsearch -LLL -x -H ldap://127.0.0.1:389 -D "$LDAP_ADMIN_DN" -w "$LDAP_ADMIN_PASSWORD" -b "$LDAP_BASE_DN"' \
+  'ldapsearch -LLL -Q -Y EXTERNAL -H ldapi:/// -b "$LDAP_BASE_DN"' \
   > backup/ldap-$(date +%F).ldif
+podman exec openldap-server ldapsearch -LLL -Q \
+  -Y EXTERNAL -H ldapi:/// -b cn=config \
+  > backup/ldap-config-$(date +%F).ldif
 ```
 
-LDIF에는 비밀번호 해시와 개인정보가 포함되므로 백업 파일 접근 권한을 제한하십시오. 복구 전에는 별도 환경에서 LDIF를 검증하고 서비스를 중지한 뒤 수행하는 것을 권장합니다.
+두 LDIF 모두 비밀번호 해시와 운영 정보가 포함될 수 있으므로 백업 파일 접근 권한을
+제한하십시오. 복구 전에는 별도 환경에서 LDIF를 검증하고 서비스를 중지한 뒤
+수행하는 것을 권장합니다.
+
+## 기존 정적 구성에서 전환
+
+기존 `ldap-data`와 `ldap-tls` 볼륨은 그대로 사용합니다. 새 `ldap-config` 볼륨이
+비어 있으면 현재 `.env`를 기준으로 `cn=config`를 한 번 생성하며, 기존
+`data.mdb`가 있으면 디렉터리 데이터와 초기 사용자는 다시 만들지 않습니다.
+
+전환 전에 LDAP 데이터 백업을 만들고 다음 명령으로 이미지를 다시 빌드해 컨테이너를
+재생성하십시오.
+
+```sh
+podman compose up -d --build --force-recreate
+podman compose exec openldap ldapsearch -LLL -Q \
+  -Y EXTERNAL -H ldapi:/// -b cn=config -s base dn
+```
 
 ## 중지 및 삭제
 
@@ -93,7 +172,7 @@ podman compose start
 podman compose down
 ```
 
-다음 명령은 LDAP DB와 자체 서명 인증서를 포함한 볼륨까지 삭제합니다.
+다음 명령은 LDAP DB, 동적 설정 및 자체 서명 인증서를 포함한 볼륨까지 삭제합니다.
 
 ```sh
 podman compose down -v
